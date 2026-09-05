@@ -6,132 +6,308 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
+import hashlib
 
-# Load environment variables
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 load_dotenv()
-
-# --------------------------------------------------
-# PAGE CONFIGURATION
-# --------------------------------------------------
 
 st.set_page_config(
     page_title="IntelliDocs",
     page_icon="📚",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# --------------------------------------------------
-# TITLE
-# --------------------------------------------------
 
-st.title("📚 IntelliDocs")
+# ============================================================
+# CUSTOM CSS
+# ============================================================
 
-st.subheader(
-    "AI-Powered Document Intelligence System"
+st.markdown(
+    """
+    <style>
+
+    .main-title {
+        font-size: 3rem;
+        font-weight: 700;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        font-size: 1.2rem;
+        opacity: 0.75;
+        margin-bottom: 30px;
+    }
+
+    .feature-box {
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid rgba(128,128,128,0.25);
+        margin-bottom: 15px;
+    }
+
+    .answer-box {
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid rgba(128,128,128,0.25);
+        margin-top: 15px;
+    }
+
+    .footer {
+        text-align: center;
+        margin-top: 50px;
+        padding: 20px;
+        opacity: 0.6;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-st.write(
-    "Upload a PDF and ask questions about its content using RAG."
-)
 
-# --------------------------------------------------
-# CHECK API KEY
-# --------------------------------------------------
+# ============================================================
+# API KEY
+# ============================================================
 
 if not os.getenv("GOOGLE_API_KEY"):
 
     st.error(
-        "Google API key not found. Please check your .env file."
+        "Google API key not found. Please configure GOOGLE_API_KEY."
     )
 
     st.stop()
 
-# --------------------------------------------------
-# PDF UPLOAD
-# --------------------------------------------------
 
-uploaded_file = st.file_uploader(
-    "Upload a PDF document",
-    type=["pdf"]
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+
+if "document_id" not in st.session_state:
+    st.session_state.document_id = None
+
+if "document_name" not in st.session_state:
+    st.session_state.document_name = None
+
+if "chunks_count" not in st.session_state:
+    st.session_state.chunks_count = 0
+
+if "page_count" not in st.session_state:
+    st.session_state.page_count = 0
+
+
+# ============================================================
+# CACHED EMBEDDINGS
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def load_embeddings():
+
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+
+# ============================================================
+# CACHED GEMINI
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def load_llm():
+
+    return ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview",
+        temperature=0.2
+    )
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.header("📚 IntelliDocs")
+
+    st.write(
+        "AI-powered document intelligence using "
+        "Retrieval-Augmented Generation."
+    )
+
+    st.divider()
+
+    st.subheader("🧠 Technology Stack")
+
+    st.write("• Python")
+    st.write("• Streamlit")
+    st.write("• LangChain")
+    st.write("• HuggingFace")
+    st.write("• FAISS")
+    st.write("• Google Gemini")
+
+    st.divider()
+
+    st.subheader("⚙️ RAG Pipeline")
+
+    st.write(
+        "PDF → Text Extraction → Chunking → "
+        "Embeddings → FAISS → Retrieval → Gemini"
+    )
+
+    st.divider()
+
+    st.caption(
+        "IntelliDocs | AI Document Intelligence"
+    )
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">📚 IntelliDocs</div>',
+    unsafe_allow_html=True
 )
 
-# --------------------------------------------------
-# PROCESS PDF
-# --------------------------------------------------
+st.markdown(
+    '<div class="subtitle">'
+    'AI-Powered Document Intelligence System'
+    '</div>',
+    unsafe_allow_html=True
+)
+
+st.write(
+    "Upload a PDF, retrieve relevant information, "
+    "and ask questions using Retrieval-Augmented Generation (RAG)."
+)
+
+
+# ============================================================
+# UPLOAD
+# ============================================================
+
+st.subheader("📄 Upload Document")
+
+uploaded_file = st.file_uploader(
+    "Choose a PDF document",
+    type=["pdf"],
+    help="Upload a text-based PDF for best results."
+)
+
+
+# ============================================================
+# PROCESS DOCUMENT
+# ============================================================
 
 if uploaded_file is not None:
 
-    st.success(
-        f"Uploaded: {uploaded_file.name}"
-    )
+    file_bytes = uploaded_file.getvalue()
 
-    # -----------------------------
-    # 1. Extract PDF Text
-    # -----------------------------
+    document_id = hashlib.md5(
+        file_bytes
+    ).hexdigest()
 
-    pdf_reader = PdfReader(
-        uploaded_file
-    )
 
-    extracted_text = ""
+    # Process only new document
+    if st.session_state.document_id != document_id:
 
-    for page in pdf_reader.pages:
+        st.session_state.vectorstore = None
+        st.session_state.document_id = document_id
+        st.session_state.document_name = uploaded_file.name
 
-        text = page.extract_text()
 
-        if text:
+        # ----------------------------------------------------
+        # PDF EXTRACTION
+        # ----------------------------------------------------
 
-            extracted_text += text + "\n"
+        with st.spinner("📖 Reading document..."):
 
-    st.info(
-        f"📄 Number of pages: {len(pdf_reader.pages)}"
-    )
+            try:
 
-    # --------------------------------------------------
-    # CHECK EXTRACTED TEXT
-    # --------------------------------------------------
+                pdf_reader = PdfReader(
+                    uploaded_file
+                )
 
-    if extracted_text.strip():
+                extracted_text = ""
 
-        # -----------------------------
-        # 2. Split Text into Chunks
-        # -----------------------------
+                for page in pdf_reader.pages:
 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
+                    text = page.extract_text()
 
-        chunks = text_splitter.split_text(
-            extracted_text
-        )
+                    if text:
 
-        st.success(
-            f"✂️ Document split into {len(chunks)} chunks."
-        )
+                        extracted_text += text + "\n"
 
-        # -----------------------------
-        # 3. Create Embeddings
-        # -----------------------------
+                st.session_state.page_count = len(
+                    pdf_reader.pages
+                )
 
-        with st.spinner(
-            "Creating document embeddings..."
-        ):
+            except Exception as e:
 
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
+                st.error(
+                    f"Unable to read PDF: {e}"
+                )
+
+                st.stop()
+
+
+        if not extracted_text.strip():
+
+            st.warning(
+                "No text could be extracted from this PDF."
             )
 
-        st.success(
-            "🧠 HuggingFace embeddings created successfully!"
-        )
+            st.info(
+                "This may be a scanned PDF. OCR support "
+                "would be required."
+            )
 
-        # -----------------------------
-        # 4. Create FAISS Database
-        # -----------------------------
+            st.stop()
+
+
+        # ----------------------------------------------------
+        # CHUNKING
+        # ----------------------------------------------------
+
+        with st.spinner("✂️ Splitting document..."):
+
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200
+            )
+
+            chunks = text_splitter.split_text(
+                extracted_text
+            )
+
+            st.session_state.chunks_count = len(chunks)
+
+
+        # ----------------------------------------------------
+        # EMBEDDINGS
+        # ----------------------------------------------------
 
         with st.spinner(
-            "Building FAISS vector database..."
+            "🧠 Loading embedding model..."
+        ):
+
+            embeddings = load_embeddings()
+
+
+        # ----------------------------------------------------
+        # FAISS
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "🗃️ Building FAISS vector database..."
         ):
 
             vectorstore = FAISS.from_texts(
@@ -139,69 +315,130 @@ if uploaded_file is not None:
                 embedding=embeddings
             )
 
+            st.session_state.vectorstore = vectorstore
+
+
         st.success(
-            "🗃️ FAISS vector database created successfully!"
+            "✅ Document processed successfully!"
         )
 
-        # -----------------------------
-        # 5. Initialize Gemini
-        # -----------------------------
 
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            temperature=0.2
+# ============================================================
+# DOCUMENT INFORMATION
+# ============================================================
+
+if st.session_state.vectorstore is not None:
+
+    st.divider()
+
+    st.subheader("📊 Document Information")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        st.metric(
+            "Pages",
+            st.session_state.page_count
         )
 
-        # -----------------------------
-        # 6. Ask Questions
-        # -----------------------------
+    with col2:
 
-        st.subheader(
-            "💬 Ask Questions About Your PDF"
+        st.metric(
+            "Text Chunks",
+            st.session_state.chunks_count
         )
+
+    with col3:
+
+        st.metric(
+            "Status",
+            "Ready"
+        )
+
+
+    st.info(
+        f"📄 **{st.session_state.document_name}** "
+        "is ready for questions."
+    )
+
+
+    # ========================================================
+    # QUESTION SECTION
+    # ========================================================
+
+    st.subheader(
+        "💬 Ask Questions About Your Document"
+    )
+
+    with st.form("question_form"):
 
         query = st.text_input(
-            "Enter your question:"
+            "Enter your question",
+            placeholder=(
+                "Example: What are the main objectives?"
+            )
         )
 
-        if query:
+        ask_button = st.form_submit_button(
+            "🔍 Ask Question"
+        )
 
-            with st.spinner(
-                "Searching document and generating answer..."
-            ):
 
-                # -----------------------------
-                # Retrieve Relevant Chunks
-                # -----------------------------
+    # ========================================================
+    # ANSWER
+    # ========================================================
 
-                results = vectorstore.similarity_search(
+    if ask_button and query.strip():
+
+        # ----------------------------------------------------
+        # RETRIEVAL
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "🔎 Searching relevant document sections..."
+        ):
+
+            results = (
+                st.session_state.vectorstore
+                .similarity_search(
                     query,
                     k=3
                 )
+            )
 
-                # -----------------------------
-                # Combine Retrieved Context
-                # -----------------------------
 
-                context = "\n\n".join(
-                    [
-                        doc.page_content
-                        for doc in results
-                    ]
-                )
+        # ----------------------------------------------------
+        # CONTEXT
+        # ----------------------------------------------------
 
-                # -----------------------------
-                # Create RAG Prompt
-                # -----------------------------
+        context = "\n\n".join(
+            doc.page_content
+            for doc in results
+        )
 
-                prompt = f"""
-You are an intelligent document assistant.
 
-Answer the user's question using ONLY the information
-provided in the document context below.
+        # ----------------------------------------------------
+        # PROMPT
+        # ----------------------------------------------------
 
-If the answer is not available in the context,
-say that the information is not available in the document.
+        prompt = f"""
+You are IntelliDocs, an intelligent document assistant.
+
+Answer the user's question using ONLY the document
+context provided below.
+
+Rules:
+
+1. Use only the provided document context.
+2. Do not use outside knowledge.
+3. Do not invent information.
+4. If the answer cannot be found in the context,
+   say:
+
+"The information is not available in the document."
+
+5. Give a clear and concise answer.
 
 Document Context:
 {context}
@@ -212,64 +449,96 @@ User Question:
 Answer:
 """
 
-                # -----------------------------
-                # Generate Answer with Gemini
-                # -----------------------------
+
+        # ----------------------------------------------------
+        # GEMINI
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "🤖 Generating answer..."
+        ):
+
+            try:
+
+                llm = load_llm()
 
                 response = llm.invoke(
                     prompt
                 )
 
-                # -----------------------------
-                # Get Answer
-                # -----------------------------
-
                 answer = response.content
 
-                # Handle Gemini structured response
-                if isinstance(answer, list):
+            except Exception as e:
 
-                    answer = "\n".join(
-                        item.get("text", "")
-                        for item in answer
-                        if isinstance(item, dict)
-                        and "text" in item
-                    )
+                st.error(
+                    f"Gemini error: {e}"
+                )
 
-                # -----------------------------
-                # Display Answer
-                # -----------------------------
+                st.stop()
 
-                st.subheader(
-                    "🤖 IntelliDocs Answer"
+
+        # ----------------------------------------------------
+        # RESPONSE HANDLING
+        # ----------------------------------------------------
+
+        if isinstance(answer, list):
+
+            answer = "\n".join(
+                item.get("text", "")
+                for item in answer
+                if isinstance(item, dict)
+                and "text" in item
+            )
+
+
+        # ----------------------------------------------------
+        # DISPLAY ANSWER
+        # ----------------------------------------------------
+
+        st.subheader(
+            "🤖 IntelliDocs Answer"
+        )
+
+        st.markdown(
+            f"""
+            <div class="answer-box">
+            {answer}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+
+        # ----------------------------------------------------
+        # RETRIEVED CONTEXT
+        # ----------------------------------------------------
+
+        with st.expander(
+            "📚 View Retrieved Document Context"
+        ):
+
+            for i, result in enumerate(results):
+
+                st.markdown(
+                    f"### Retrieved Section {i + 1}"
                 )
 
                 st.write(
-                    answer
+                    result.page_content
                 )
 
-                # -----------------------------
-                # Show Retrieved Context
-                # -----------------------------
 
-                with st.expander(
-                    "📚 View Retrieved Document Context"
-                ):
+# ============================================================
+# FOOTER
+# ============================================================
 
-                    for i, result in enumerate(
-                        results
-                    ):
-
-                        st.write(
-                            f"**Retrieved Section {i + 1}:**"
-                        )
-
-                        st.write(
-                            result.page_content
-                        )
-
-    else:
-
-        st.warning(
-            "No text could be extracted from this PDF."
-        )
+st.markdown(
+    """
+    <div class="footer">
+    Built with Python • LangChain • FAISS • HuggingFace • Google Gemini
+    <br>
+    IntelliDocs — AI-Powered Document Intelligence
+    </div>
+    """,
+    unsafe_allow_html=True
+)
